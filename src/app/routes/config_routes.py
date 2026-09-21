@@ -13,6 +13,7 @@ from app.config_store import read_combined, to_pydantic_config
 from app.processor import ProcessorSingleton
 from app.runtime_config import config as runtime_config
 from app.writer.client import writer_client
+from podcast_processor.jev_client import JevClient
 from shared.llm_utils import model_uses_max_completion_tokens
 
 logger = logging.getLogger("global_logger")
@@ -45,6 +46,10 @@ def _sanitize_config_for_client(cfg: dict[str, Any]) -> dict[str, Any]:
         llm_api_key = llm.pop("llm_api_key", None)
         if llm_api_key:
             llm["llm_api_key_preview"] = _mask_secret(llm_api_key)
+
+        jev_api_key = llm.pop("jev_api_key", None)
+        if jev_api_key:
+            llm["jev_api_key_preview"] = _mask_secret(jev_api_key)
 
         whisper_api_key = whisper.pop("api_key", None)
         if whisper_api_key:
@@ -139,6 +144,8 @@ def _hydrate_llm_config(data: dict[str, Any]) -> None:
         "enable_llm_chapter_fallback_tagging",
         llm.get("enable_llm_chapter_fallback_tagging"),
     )
+    for key in ("ad_classifier_backend", "jev_api_key", "jev_base_url", "jev_model"):
+        llm[key] = getattr(runtime_config, key, llm.get(key))
 
 
 def _hydrate_whisper_config(data: dict[str, Any]) -> None:
@@ -272,6 +279,9 @@ _SIMPLE_LLM_ENV_MAP: dict[str, str] = {
     "LLM_ENABLE_TOKEN_RATE_LIMITING": "llm.llm_enable_token_rate_limiting",
     "LLM_MAX_INPUT_TOKENS_PER_CALL": "llm.llm_max_input_tokens_per_call",
     "LLM_MAX_INPUT_TOKENS_PER_MINUTE": "llm.llm_max_input_tokens_per_minute",
+    "AD_CLASSIFIER_BACKEND": "llm.ad_classifier_backend",
+    "JEV_BASE_URL": "llm.jev_base_url",
+    "JEV_MODEL": "llm.jev_model",
 }
 
 
@@ -279,6 +289,13 @@ def _register_llm_overrides(overrides: dict[str, Any]) -> None:
     """Register LLM-related environment overrides."""
     env_var, env_value = _first_env(["LLM_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY"])
     _register_override(overrides, "llm.llm_api_key", env_var, env_value, secret=True)
+    _register_override(
+        overrides,
+        "llm.jev_api_key",
+        "JEV_API_KEY",
+        os.environ.get("JEV_API_KEY") or None,
+        secret=True,
+    )
 
     for env_key, field_path in _SIMPLE_LLM_ENV_MAP.items():
         val = os.environ.get(env_key)
@@ -418,6 +435,9 @@ def _get_llm_overridden_fields() -> set[str]:
     ):
         overridden.add("llm.llm_api_key")
 
+    if os.environ.get("JEV_API_KEY"):
+        overridden.add("llm.jev_api_key")
+
     for env_key, field_path in _SIMPLE_LLM_ENV_MAP.items():
         if os.environ.get(env_key):
             overridden.add(field_path)
@@ -479,8 +499,12 @@ def _strip_env_overridden_fields(
     llm = cleaned.get("llm")
     if isinstance(llm, dict):
         llm = dict(llm)
-        # llm_api_key has multi-env fallback, so it's not in _SIMPLE_LLM_ENV_MAP
-        llm_field_paths = ["llm.llm_api_key", *_SIMPLE_LLM_ENV_MAP.values()]
+        # API keys are secrets, so they're not in _SIMPLE_LLM_ENV_MAP
+        llm_field_paths = [
+            "llm.llm_api_key",
+            "llm.jev_api_key",
+            *_SIMPLE_LLM_ENV_MAP.values(),
+        ]
         for field_path in llm_field_paths:
             field_key = field_path.split(".", 1)[1]
             if field_path in overridden and field_key in llm:
@@ -636,6 +660,44 @@ def api_test_llm() -> flask.Response:
     except Exception as e:  # noqa: BLE001
         logger.error(f"LLM connection test failed: {e}")
         return flask.make_response(jsonify({"ok": False, "error": str(e)}), 400)
+
+
+@config_bp.route("/api/config/test-jev", methods=["POST"])
+def api_test_jev() -> flask.Response:
+    _, error_response = require_admin()
+    if error_response:
+        return error_response
+
+    payload: dict[str, Any] = request.get_json(silent=True) or {}
+    llm: dict[str, Any] = dict(payload.get("llm", {}))
+
+    api_key: str | None = llm.get("jev_api_key") or getattr(
+        runtime_config, "jev_api_key", None
+    )
+    if not api_key:
+        return _make_error_response("Missing jev_api_key")
+
+    base_url = llm.get("jev_base_url")
+    model = llm.get("jev_model")
+    client = JevClient(
+        api_key=api_key,
+        base_url=(
+            base_url
+            if base_url is not None
+            else getattr(runtime_config, "jev_base_url", None)
+        ),
+        model=model
+        if model is not None
+        else getattr(runtime_config, "jev_model", None),
+    )
+    try:
+        client.ping()
+        return _make_success_response(
+            "Jev connection OK", model=client.model, base_url=client.base_url
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Jev connection test failed: {e}")
+        return _make_error_response(str(e))
 
 
 def _make_error_response(error_msg: str, status_code: int = 400) -> flask.Response:
@@ -825,8 +887,10 @@ def api_configured_check() -> flask.Response:
         _hydrate_runtime_config(data)
 
         llm = data.get("llm", {}) if isinstance(data, dict) else {}
-        api_key = llm.get("llm_api_key")
-        configured = bool(api_key)
+        if llm.get("ad_classifier_backend") == "jev":
+            configured = bool(llm.get("jev_api_key"))
+        else:
+            configured = bool(llm.get("llm_api_key"))
         return flask.jsonify({"configured": configured})
     except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to check API configuration: {e}")

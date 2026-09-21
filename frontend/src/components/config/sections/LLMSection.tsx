@@ -33,6 +33,11 @@ export default function LLMSection() {
   const tokenRateLimitReadOnly = isFieldReadOnly('llm.llm_enable_token_rate_limiting');
   const maxInputPerCallReadOnly = isFieldReadOnly('llm.llm_max_input_tokens_per_call');
   const maxInputPerMinReadOnly = isFieldReadOnly('llm.llm_max_input_tokens_per_minute');
+  const backendReadOnly = isFieldReadOnly('llm.ad_classifier_backend');
+  const jevApiKeyReadOnly = isFieldReadOnly('llm.jev_api_key');
+  const jevBaseUrlReadOnly = isFieldReadOnly('llm.jev_base_url');
+  const jevModelReadOnly = isFieldReadOnly('llm.jev_model');
+  const usesJev = pending?.llm?.ad_classifier_backend === 'jev';
 
   const inputClass = (readOnly: boolean) =>
     readOnly ? 'input bg-gray-100 cursor-not-allowed' : 'input';
@@ -56,8 +61,99 @@ export default function LLMSection() {
     });
   };
 
+  const handleTestJev = () => {
+    toast.promise(configApi.testJev({ llm: pending.llm as LLMConfig }), {
+      loading: 'Testing Jev connection...',
+      success: (res: { ok: boolean; message?: string }) => res?.message || 'Jev connection OK',
+      error: (err: unknown) => {
+        const e = err as {
+          response?: { data?: { error?: string; message?: string } };
+          message?: string;
+        };
+        return (
+          e?.response?.data?.error ||
+          e?.response?.data?.message ||
+          e?.message ||
+          'Jev connection failed'
+        );
+      },
+    });
+  };
+
   return (
     <div className="space-y-6">
+      <Section title="Ad Classifier">
+        <Field
+          label="Classifier"
+          envMeta={getEnvHint('llm.ad_classifier_backend')}
+          hint="Which model decides which transcript segments are ads"
+        >
+          <select
+            className={inputClass(backendReadOnly)}
+            value={pending?.llm?.ad_classifier_backend ?? 'llm'}
+            onChange={(e) => setField(['llm', 'ad_classifier_backend'], e.target.value)}
+            disabled={backendReadOnly}
+          >
+            <option value="llm">LLM (configured below)</option>
+            <option value="jev">TypeSafe Jev</option>
+          </select>
+        </Field>
+
+        {usesJev && (
+          <>
+            <Field
+              label="Jev API Key"
+              envMeta={getEnvHint('llm.jev_api_key')}
+              hint="A TypeSafe key, or an OpenRouter key (sk-or-...) to use Jev through OpenRouter"
+            >
+              <input
+                className={inputClass(jevApiKeyReadOnly)}
+                type="text"
+                placeholder={pending?.llm?.jev_api_key_preview || ''}
+                value={pending?.llm?.jev_api_key || ''}
+                onChange={(e) => setField(['llm', 'jev_api_key'], e.target.value)}
+                disabled={jevApiKeyReadOnly}
+              />
+            </Field>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Field
+                label="Jev Base URL (optional)"
+                envMeta={getEnvHint('llm.jev_base_url')}
+                hint="Defaults to OpenRouter for sk-or- keys, otherwise api.typesafe.ai"
+              >
+                <input
+                  className={inputClass(jevBaseUrlReadOnly)}
+                  type="text"
+                  placeholder="https://api.typesafe.ai"
+                  value={pending?.llm?.jev_base_url || ''}
+                  onChange={(e) => setField(['llm', 'jev_base_url'], e.target.value || null)}
+                  disabled={jevBaseUrlReadOnly}
+                />
+              </Field>
+              <Field
+                label="Jev Model (optional)"
+                envMeta={getEnvHint('llm.jev_model')}
+                hint="Defaults to jev-latest (~typesafe/jev-latest on OpenRouter)"
+              >
+                <input
+                  className={inputClass(jevModelReadOnly)}
+                  type="text"
+                  placeholder="jev-latest"
+                  value={pending?.llm?.jev_model || ''}
+                  onChange={(e) => setField(['llm', 'jev_model'], e.target.value || null)}
+                  disabled={jevModelReadOnly}
+                />
+              </Field>
+            </div>
+            <p className="text-xs text-gray-600">
+              With Jev, LLM boundary refinement is skipped. The LLM settings below are still used
+              for LLM chapter tagging if you enable it.
+            </p>
+            <TestButton onClick={handleTestJev} label="Test Jev" />
+          </>
+        )}
+      </Section>
+
       <Section title="LLM">
         <Field label="API Key" envMeta={getEnvHint('llm.llm_api_key')}>
           <input

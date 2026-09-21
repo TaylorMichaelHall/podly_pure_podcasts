@@ -37,7 +37,7 @@ You have a few options to get started:
 - You request an episode
 - Podly downloads the requested episode
 - Whisper transcribes the episode
-- LLM labels ad segments
+- An LLM (or, optionally, [TypeSafe Jev](https://docs.typesafe.ai) via its API or OpenRouter) labels ad segments
 - Podly removes the ad segments
 - Podly delivers the ad-free version of the podcast to you
 

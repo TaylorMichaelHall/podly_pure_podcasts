@@ -418,6 +418,15 @@ class LLMSettings(db.Model):  # type: ignore[name-defined, misc]
         nullable=False,
         default=DEFAULTS.ENABLE_LLM_CHAPTER_FALLBACK_TAGGING,
     )
+    ad_classifier_backend = db.Column(
+        db.Text,
+        nullable=False,
+        default=DEFAULTS.AD_CLASSIFIER_BACKEND,
+        server_default=DEFAULTS.AD_CLASSIFIER_BACKEND,
+    )
+    jev_api_key = db.Column(db.Text, nullable=True)
+    jev_base_url = db.Column(db.Text, nullable=True)
+    jev_model = db.Column(db.Text, nullable=True)
 
     created_at = db.Column(db.DateTime, nullable=False, default=_utc_now_naive)
     updated_at = db.Column(db.DateTime, nullable=False, default=_utc_now_naive)

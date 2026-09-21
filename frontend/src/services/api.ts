@@ -681,6 +681,12 @@ export const configApi = {
     const response = await api.post('/api/config/test-llm', payload ?? {});
     return response.data;
   },
+  testJev: async (
+    payload: Partial<{ llm: LLMConfig }>
+  ): Promise<{ ok: boolean; message?: string; error?: string }> => {
+    const response = await api.post('/api/config/test-jev', payload ?? {});
+    return response.data;
+  },
   testWhisper: async (
     payload: Partial<{ whisper: WhisperConfig }>
   ): Promise<{ ok: boolean; message?: string; error?: string }> => {

@@ -107,6 +107,7 @@ def ensure_defaults() -> None:
             "enable_boundary_refinement": DEFAULTS.ENABLE_BOUNDARY_REFINEMENT,
             "enable_word_level_boundary_refinder": DEFAULTS.ENABLE_WORD_LEVEL_BOUNDARY_REFINDER,
             "enable_llm_chapter_fallback_tagging": DEFAULTS.ENABLE_LLM_CHAPTER_FALLBACK_TAGGING,
+            "ad_classifier_backend": DEFAULTS.AD_CLASSIFIER_BACKEND,
         },
     )
 
@@ -210,6 +211,10 @@ def read_combined() -> dict[str, Any]:
             "enable_boundary_refinement": llm.enable_boundary_refinement,
             "enable_word_level_boundary_refinder": llm.enable_word_level_boundary_refinder,
             "enable_llm_chapter_fallback_tagging": llm.enable_llm_chapter_fallback_tagging,
+            "ad_classifier_backend": llm.ad_classifier_backend,
+            "jev_api_key": llm.jev_api_key,
+            "jev_base_url": llm.jev_base_url,
+            "jev_model": llm.jev_model,
         },
         "whisper": whisper_payload,
         "processing": {
@@ -251,10 +256,16 @@ def _update_section_llm(data: dict[str, Any]) -> None:
         "enable_boundary_refinement",
         "enable_word_level_boundary_refinder",
         "enable_llm_chapter_fallback_tagging",
+        "ad_classifier_backend",
+        "jev_api_key",
+        "jev_base_url",
+        "jev_model",
     ]:
         if key in data:
             new_val = data[key]
-            if key == "llm_api_key" and _is_empty(new_val):
+            if key in ("llm_api_key", "jev_api_key") and _is_empty(new_val):
+                continue
+            if key == "ad_classifier_backend" and new_val not in ("llm", "jev"):
                 continue
             setattr(row, key, new_val)
     safe_commit(
@@ -532,6 +543,11 @@ def to_pydantic_config() -> PydanticConfig:
                 DEFAULTS.ENABLE_LLM_CHAPTER_FALLBACK_TAGGING,
             )
         ),
+        ad_classifier_backend=data["llm"].get("ad_classifier_backend")
+        or DEFAULTS.AD_CLASSIFIER_BACKEND,
+        jev_api_key=data["llm"].get("jev_api_key"),
+        jev_base_url=data["llm"].get("jev_base_url") or None,
+        jev_model=data["llm"].get("jev_model") or None,
         output=data["output"],
         processing=data["processing"],
         background_update_interval_minute=data["app"].get(
@@ -666,6 +682,30 @@ def _apply_top_level_env_overrides(cfg: PydanticConfig) -> None:
     )
     if env_llm_max_input_per_min is not None:
         cfg.llm_max_input_tokens_per_minute = env_llm_max_input_per_min
+
+    _apply_ad_classifier_env_overrides(cfg)
+
+
+def _apply_ad_classifier_env_overrides(cfg: PydanticConfig) -> None:
+    env_backend = (os.environ.get("AD_CLASSIFIER_BACKEND") or "").strip().lower()
+    if env_backend in ("llm", "jev"):
+        cfg.ad_classifier_backend = env_backend
+    elif env_backend:
+        logger.warning(
+            "Ignoring AD_CLASSIFIER_BACKEND=%r; expected 'llm' or 'jev'", env_backend
+        )
+
+    env_jev_key = os.environ.get("JEV_API_KEY")
+    if env_jev_key:
+        cfg.jev_api_key = env_jev_key
+
+    env_jev_base_url = os.environ.get("JEV_BASE_URL")
+    if env_jev_base_url:
+        cfg.jev_base_url = env_jev_base_url
+
+    env_jev_model = os.environ.get("JEV_MODEL")
+    if env_jev_model:
+        cfg.jev_model = env_jev_model
 
 
 def _apply_remote_whisper_runtime_overrides(whisper: RemoteWhisperConfig) -> None:

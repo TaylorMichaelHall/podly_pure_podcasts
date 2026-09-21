@@ -16,6 +16,14 @@ ENABLE_BOUNDARY_REFINEMENT = True
 ENABLE_WORD_LEVEL_BOUNDARY_REFINDER = False
 ENABLE_LLM_CHAPTER_FALLBACK_TAGGING = False
 
+# Ad classifier backend: "llm" (litellm chat completion) or "jev" (TypeSafe System One)
+AD_CLASSIFIER_BACKEND = "llm"
+JEV_DEFAULT_BASE_URL = "https://api.typesafe.ai"
+JEV_DEFAULT_MODEL = "jev-latest"
+JEV_OPENROUTER_BASE_URL = "https://openrouter.ai/api"
+JEV_OPENROUTER_DEFAULT_MODEL = "~typesafe/jev-latest"
+JEV_DEFAULT_TIMEOUT_SEC = 30
+
 # Whisper defaults
 WHISPER_DEFAULT_TYPE = "groq"
 WHISPER_LOCAL_MODEL = "base.en"

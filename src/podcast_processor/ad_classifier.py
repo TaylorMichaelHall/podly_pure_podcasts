@@ -16,6 +16,7 @@ from app.models import Identification, ModelCall, Post, TranscriptSegment
 from app.writer.client import writer_client
 from podcast_processor.boundary_refiner import BoundaryRefiner
 from podcast_processor.cue_detector import CueDetector
+from podcast_processor.jev_client import JevAPIError, JevClient, JevSegment
 from podcast_processor.llm_concurrency_limiter import (
     ConcurrencyContext,
     LLMConcurrencyLimiter,
@@ -109,9 +110,22 @@ class AdClassifier:
         # Initialize cue detector for neighbor expansion
         self.cue_detector = CueDetector()
 
+        self.jev_client: JevClient | None = None
+        if config.ad_classifier_backend == "jev":
+            self.jev_client = JevClient(
+                api_key=config.jev_api_key or "",
+                base_url=config.jev_base_url,
+                model=config.jev_model,
+            )
+            self.logger.info(
+                f"Ad classification backend: Jev ({self.jev_client.model} via {self.jev_client.base_url})"
+            )
+
         # Initialize boundary refiner (conditionally based on config)
         self.boundary_refiner: BoundaryRefiner | None = None
-        if config.enable_boundary_refinement:
+        if self.jev_client is not None:
+            self.logger.info("Boundary refinement requires an LLM; disabled for Jev")
+        elif config.enable_boundary_refinement:
             if getattr(config, "enable_word_level_boundary_refinder", False):
                 self.boundary_refiner = WordBoundaryRefiner(config, self.logger)  # type: ignore[assignment]
                 self.logger.info("Word-level boundary refiner enabled")
@@ -320,6 +334,8 @@ class AdClassifier:
             self._perform_llm_call(
                 model_call=model_call,
                 system_prompt=system_prompt,
+                chunk_segments=chunk_segments,
+                post=post,
             )
 
         if model_call.status == "success" and model_call.response:
@@ -694,7 +710,11 @@ class AdClassifier:
         user_prompt_str: str,
     ) -> ModelCall | None:
         """Get an existing ModelCall or create a new one via writer."""
-        model = self.config.llm_model
+        model = (
+            f"jev:{self.jev_client.model}"
+            if self.jev_client is not None
+            else self.config.llm_model
+        )
         result = writer_client.action(
             "upsert_model_call",
             {
@@ -722,7 +742,14 @@ class AdClassifier:
         """Determine if an LLM call should be made."""
         return model_call.status not in ("success", "failed_permanent")
 
-    def _perform_llm_call(self, *, model_call: ModelCall, system_prompt: str) -> None:
+    def _perform_llm_call(
+        self,
+        *,
+        model_call: ModelCall,
+        system_prompt: str,
+        chunk_segments: list[TranscriptSegment] | None = None,
+        post: Post | None = None,
+    ) -> None:
         """Perform the LLM call for classification."""
         self.logger.info(
             f"Calling LLM for ModelCall {model_call.id} (post {model_call.post_id}, segments {model_call.first_segment_sequence_num}-{model_call.last_segment_sequence_num})."
@@ -731,7 +758,12 @@ class AdClassifier:
             if isinstance(self.config.whisper, TestWhisperConfig):
                 self._handle_test_mode_call(model_call)
             else:
-                self._call_model(model_call_obj=model_call, system_prompt=system_prompt)
+                self._call_model(
+                    model_call_obj=model_call,
+                    system_prompt=system_prompt,
+                    chunk_segments=chunk_segments,
+                    post=post,
+                )
         except Exception as e:
             self.logger.error(
                 f"LLM interaction via _call_model for ModelCall {model_call.id} resulted in an exception: {e}",
@@ -972,6 +1004,8 @@ class AdClassifier:
         """Determine if an error should be retried."""
         if isinstance(error, InternalServerError):
             return True
+        if isinstance(error, JevAPIError):
+            return error.retryable
 
         # Check for retryable HTTP errors in other exception types
         error_str = str(error).lower()
@@ -989,8 +1023,10 @@ class AdClassifier:
         model_call_obj: ModelCall,
         system_prompt: str,
         max_retries: int | None = None,
+        chunk_segments: list[TranscriptSegment] | None = None,
+        post: Post | None = None,
     ) -> str | None:
-        """Call the LLM model with retry logic."""
+        """Call the classification model (LLM or Jev) with retry logic."""
         # Use configured retry count if not specified
         retry_count = (
             max_retries
@@ -1028,23 +1064,14 @@ class AdClassifier:
                             getattr(pending_res, "error", "Failed to update ModelCall")
                         )
 
-                # Prepare API call and validate token limits
-                completion_args = self._prepare_api_call(model_call_obj, system_prompt)
-                if completion_args is None:
-                    return None  # Token limit exceeded
-
-                # Use concurrency limiter if available
-                if self.concurrency_limiter:
-                    with ConcurrencyContext(self.concurrency_limiter, timeout=30.0):
-                        response = litellm.completion(**completion_args)
+                if self.jev_client is not None:
+                    raw_response_content = self._call_jev(
+                        chunk_segments=chunk_segments or [], post=post
+                    )
                 else:
-                    response = litellm.completion(**completion_args)
-
-                response_first_choice = response.choices[0]
-                assert isinstance(response_first_choice, Choices)
-                content = response_first_choice.message.content
-                assert content is not None
-                raw_response_content = content
+                    raw_response_content = self._call_llm(model_call_obj, system_prompt)
+                    if raw_response_content is None:
+                        return None  # Token limit exceeded
 
                 success_res = writer_client.update(
                     "ModelCall",
@@ -1108,6 +1135,46 @@ class AdClassifier:
         raise RuntimeError(
             f"Maximum retries ({retry_count}) exceeded for ModelCall {model_call_obj.id}."
         )
+
+    def _call_llm(self, model_call_obj: ModelCall, system_prompt: str) -> str | None:
+        """Run one litellm completion; returns None if the token limit is exceeded."""
+        completion_args = self._prepare_api_call(model_call_obj, system_prompt)
+        if completion_args is None:
+            return None
+
+        # Use concurrency limiter if available
+        if self.concurrency_limiter:
+            with ConcurrencyContext(self.concurrency_limiter, timeout=30.0):
+                response = litellm.completion(**completion_args)
+        else:
+            response = litellm.completion(**completion_args)
+
+        response_first_choice = response.choices[0]
+        assert isinstance(response_first_choice, Choices)
+        content = response_first_choice.message.content
+        assert content is not None
+        return content
+
+    def _call_jev(
+        self, *, chunk_segments: list[TranscriptSegment], post: Post | None
+    ) -> str:
+        """Classify a chunk with Jev; returns AdSegmentPredictionList JSON."""
+        assert self.jev_client is not None
+        if not chunk_segments:
+            raise ValueError("Jev classification requires the chunk's segments")
+        segments = [
+            JevSegment(start=seg.start_time, text=seg.text) for seg in chunk_segments
+        ]
+        kwargs = {
+            "podcast_title": post.title if post else None,
+            "podcast_description": post.description if post else None,
+        }
+        if self.concurrency_limiter:
+            with ConcurrencyContext(self.concurrency_limiter, timeout=30.0):
+                predictions = self.jev_client.classify_ad_segments(segments, **kwargs)
+        else:
+            predictions = self.jev_client.classify_ad_segments(segments, **kwargs)
+        return predictions.model_dump_json()
 
     def _handle_retryable_error(
         self,
@@ -1335,7 +1402,8 @@ class AdClassifier:
         is_transition: bool,
         gap_seconds: float,
     ) -> bool:
-        if not self.config.enable_boundary_refinement:
+        # Without refinement to trim them, only expand on strong cues.
+        if not self.config.enable_boundary_refinement or self.jev_client is not None:
             return has_strong_cue
 
         if has_strong_cue or is_transition:

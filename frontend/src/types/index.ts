@@ -121,6 +121,11 @@ export interface LLMConfig {
   enable_boundary_refinement: boolean;
   enable_word_level_boundary_refinder?: boolean;
   enable_llm_chapter_fallback_tagging?: boolean;
+  ad_classifier_backend?: 'llm' | 'jev';
+  jev_api_key?: string | null;
+  jev_api_key_preview?: string | null;
+  jev_base_url?: string | null;
+  jev_model?: string | null;
 }
 
 export type WhisperConfig =

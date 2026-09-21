@@ -105,6 +105,22 @@ class Config(BaseModel):
         default=DEFAULTS.ENABLE_WORD_LEVEL_BOUNDARY_REFINDER,
         description="Enable word-level (heuristic-timed) ad boundary refinement",
     )
+    ad_classifier_backend: Literal["llm", "jev"] = Field(
+        default=DEFAULTS.AD_CLASSIFIER_BACKEND,
+        description="Backend used for ad segment classification: an LLM via litellm, or TypeSafe Jev",
+    )
+    jev_api_key: str | None = Field(
+        default=None,
+        description="TypeSafe or OpenRouter API key used when ad_classifier_backend is 'jev'",
+    )
+    jev_base_url: str | None = Field(
+        default=None,
+        description="Jev API base URL. Inferred from the API key when unset (OpenRouter keys use OpenRouter).",
+    )
+    jev_model: str | None = Field(
+        default=None,
+        description="Jev model ID. Defaults to the latest Jev for the resolved provider.",
+    )
     enable_llm_chapter_fallback_tagging: bool = Field(
         default=DEFAULTS.ENABLE_LLM_CHAPTER_FALLBACK_TAGGING,
         description=(
@@ -166,6 +182,7 @@ class Config(BaseModel):
         return self.model_copy(
             update={
                 "llm_api_key": "X" * 10,
+                "jev_api_key": "X" * 10 if self.jev_api_key else None,
             },
             deep=True,
         )

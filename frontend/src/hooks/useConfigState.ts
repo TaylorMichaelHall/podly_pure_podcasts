@@ -23,6 +23,10 @@ const DEFAULT_ENV_HINTS: Record<string, EnvOverrideEntry> = {
   'llm.llm_enable_token_rate_limiting': { env_var: 'LLM_ENABLE_TOKEN_RATE_LIMITING' },
   'llm.llm_max_input_tokens_per_call': { env_var: 'LLM_MAX_INPUT_TOKENS_PER_CALL' },
   'llm.llm_max_input_tokens_per_minute': { env_var: 'LLM_MAX_INPUT_TOKENS_PER_MINUTE' },
+  'llm.ad_classifier_backend': { env_var: 'AD_CLASSIFIER_BACKEND' },
+  'llm.jev_api_key': { env_var: 'JEV_API_KEY' },
+  'llm.jev_base_url': { env_var: 'JEV_BASE_URL' },
+  'llm.jev_model': { env_var: 'JEV_MODEL' },
   'whisper.whisper_type': { env_var: 'WHISPER_TYPE' },
   'whisper.api_key': { env_var: 'WHISPER_REMOTE_API_KEY' },
   'whisper.base_url': { env_var: 'WHISPER_REMOTE_BASE_URL' },
@@ -262,8 +266,10 @@ export function useConfigState(): UseConfigStateReturn {
     setWhisperStatus({ status: 'loading', message: '', error: '' });
 
     try {
+      const testClassifier =
+        pending.llm?.ad_classifier_backend === 'jev' ? configApi.testJev : configApi.testLLM;
       const [llmRes, whisperRes] = await Promise.all([
-        configApi.testLLM({ llm: pending.llm as LLMConfig }),
+        testClassifier({ llm: pending.llm as LLMConfig }),
         configApi.testWhisper({ whisper: pending.whisper as WhisperConfig }),
       ]);
 
