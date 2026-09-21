@@ -122,6 +122,7 @@ def test_classify_sends_one_noul_per_segment_and_keeps_likely_ads() -> None:
     body = kwargs["json"]
     assert body["model"] == "~typesafe/jev-latest"
     assert body["state"]["podcast"]["title"] == "Show"
+    assert set(body["state"]["ad_policy"]) == {"ad", "not_ad"}
     assert [t["text"] for t in body["state"]["transcript"]] == [
         "line 0",
         "line 1",
@@ -131,14 +132,64 @@ def test_classify_sends_one_noul_per_segment_and_keeps_likely_ads() -> None:
     assert len(body["questions"]) == 4
     question = body["questions"]["seg_1"]
     assert question["type"] == "noul"
-    assert question["instructions"]["segment"]["text"] == "line 1"
-    assert set(question["criteria"]) == {"true", "false"}
+    assert question["instructions"]["line"] == {"id": 1, "text": "line 1"}
+    # The ad definition is shared via state, not repeated per question
+    assert "criteria" not in question
 
     assert [(p.segment_offset, p.confidence) for p in result.ad_segments] == [
         (10.0, 0.97),
         (20.0, 0.6),
     ]
     assert result.content_type is None
+
+
+def test_default_chunk_is_one_request() -> None:
+    session = _session_answering({})
+    client = JevClient(api_key="ts-key", session=session)
+    # 60 new segments + 30 overlap, the default chunk size
+    segments = [JevSegment(start=float(i), text=f"line {i}") for i in range(90)]
+
+    client.classify_ad_segments(segments, podcast_title=None, podcast_description=None)
+
+    assert session.post.call_count == 1
+
+
+def test_known_ads_stay_in_state_but_are_not_asked() -> None:
+    session = _session_answering({3: 0.9})
+    client = JevClient(api_key="ts-key", session=session)
+    segments = [JevSegment(start=float(i * 10), text=f"line {i}") for i in range(4)]
+
+    result = client.classify_ad_segments(
+        segments,
+        podcast_title=None,
+        podcast_description=None,
+        known_ad_confidences={0: 0.85, 1: 0.92},
+    )
+
+    body = session.post.call_args.kwargs["json"]
+    assert len(body["state"]["transcript"]) == 4
+    assert set(body["questions"]) == {"seg_2", "seg_3"}
+    assert [(p.segment_offset, p.confidence) for p in result.ad_segments] == [
+        (0.0, 0.85),
+        (10.0, 0.92),
+        (30.0, 0.9),
+    ]
+
+
+def test_all_known_ads_makes_no_request() -> None:
+    session = _session_answering({})
+    client = JevClient(api_key="ts-key", session=session)
+    segments = [JevSegment(start=0.0, text="line 0")]
+
+    result = client.classify_ad_segments(
+        segments,
+        podcast_title=None,
+        podcast_description=None,
+        known_ad_confidences={0: 0.9},
+    )
+
+    session.post.assert_not_called()
+    assert [p.confidence for p in result.ad_segments] == [0.9]
 
 
 def test_classify_batches_large_chunks() -> None:
@@ -247,6 +298,59 @@ def test_process_chunk_with_jev_creates_identifications(app: Flask) -> None:
         }
         # min_confidence in the standard test config is 0.7
         assert identified == {3: 0.95, 4: 0.75}
+
+
+def test_jev_skips_segments_already_identified_as_ads(app: Flask) -> None:
+    config = _jev_config()
+    with app.app_context():
+        post = Post(
+            id=1, feed_id=1, guid="g1", title="Show", download_url="https://x/1.mp3"
+        )
+        db.session.add(post)
+        segments = [
+            TranscriptSegment(
+                id=i + 1,
+                post_id=1,
+                sequence_num=i,
+                start_time=float(100 + i * 10),
+                end_time=float(110 + i * 10),
+                text=f"line {i}",
+            )
+            for i in range(3)
+        ]
+        db.session.add_all(segments)
+        earlier_call = ModelCall(
+            post_id=1,
+            model_name="jev:jev-latest",
+            prompt="p",
+            first_segment_sequence_num=0,
+            last_segment_sequence_num=0,
+            status="success",
+        )
+        db.session.add(earlier_call)
+        db.session.flush()
+        db.session.add(
+            Identification(
+                transcript_segment_id=1,
+                model_call_id=earlier_call.id,
+                label="ad",
+                confidence=0.9,
+            )
+        )
+        db.session.commit()
+
+        classifier = AdClassifier(config=config, db_session=db.session)
+        assert classifier.jev_client is not None
+        session = _session_answering({})
+        classifier.jev_client.session = session
+
+        response = classifier._call_jev(chunk_segments=segments, post=post)
+
+        asked = set(session.post.call_args.kwargs["json"]["questions"])
+        assert asked == {"seg_1", "seg_2"}
+        assert json.loads(response)["ad_segments"] == [
+            {"segment_offset": 100.0, "confidence": 0.9}
+        ]
 
 
 def test_jev_auth_error_fails_model_call_permanently(app: Flask) -> None:

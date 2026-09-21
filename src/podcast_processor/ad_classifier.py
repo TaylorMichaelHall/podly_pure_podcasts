@@ -1165,15 +1165,41 @@ class AdClassifier:
         segments = [
             JevSegment(start=seg.start_time, text=seg.text) for seg in chunk_segments
         ]
-        kwargs = {
-            "podcast_title": post.title if post else None,
-            "podcast_description": post.description if post else None,
+
+        # Overlap segments already identified as ads in the previous chunk keep
+        # their stored confidence instead of being asked (and billed) again.
+        stored = dict(
+            self.db_session.query(
+                Identification.transcript_segment_id, Identification.confidence
+            )
+            .filter(
+                Identification.transcript_segment_id.in_(
+                    [seg.id for seg in chunk_segments]
+                ),
+                Identification.label == "ad",
+            )
+            .all()
+        )
+        known_ad_confidences = {
+            i: float(stored[seg.id])
+            for i, seg in enumerate(chunk_segments)
+            if stored.get(seg.id) is not None
         }
+
+        def classify() -> AdSegmentPredictionList:
+            assert self.jev_client is not None
+            return self.jev_client.classify_ad_segments(
+                segments,
+                podcast_title=post.title if post else None,
+                podcast_description=post.description if post else None,
+                known_ad_confidences=known_ad_confidences,
+            )
+
         if self.concurrency_limiter:
             with ConcurrencyContext(self.concurrency_limiter, timeout=30.0):
-                predictions = self.jev_client.classify_ad_segments(segments, **kwargs)
+                predictions = classify()
         else:
-            predictions = self.jev_client.classify_ad_segments(segments, **kwargs)
+            predictions = classify()
         return predictions.model_dump_json()
 
     def _handle_retryable_error(

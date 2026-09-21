@@ -21,30 +21,29 @@ import requests
 from podcast_processor.model_output import AdSegmentPrediction, AdSegmentPredictionList
 from shared import defaults as DEFAULTS
 
-# Keep each request well inside Jev's 64k-token budget for state + questions.
-MAX_QUESTIONS_PER_REQUEST = 50
+# A default chunk (60 new + up to 30 overlap segments) fits in one request.
+# Larger chunks are split so state + questions stay inside Jev's 64k budget.
+MAX_QUESTIONS_PER_REQUEST = 200
 MAX_DESCRIPTION_CHARS = 2000
 # Predictions below this probability are not recorded in ModelCall.response.
 # The configured output.min_confidence still decides what gets cut.
 MIN_RECORDED_PROBABILITY = 0.5
 
-AD_QUESTION = (
-    "Is `segment` part of an advertisement: a sponsor read, a paid promotion for "
-    "an external product or service, or a promo for a different podcast? Use "
-    "`transcript` in the state for surrounding context."
-)
-AD_CRITERIA = {
-    "true": (
-        "The segment is sponsor or advertising content, including host-read ads, "
-        "promo codes, sponsor URLs, promos for other shows, and the short lead-ins "
-        "or transitions into and out of an ad break."
+# The ad definition lives in the state, which is sent once per request, rather
+# than as per-question criteria, which would be repeated for every segment.
+AD_POLICY = {
+    "ad": (
+        "Sponsor or advertising content: host-read ads, paid promotions for an "
+        "external product or service, promo codes, sponsor URLs, promos for other "
+        "podcasts, and the short lead-ins or transitions into and out of an ad break."
     ),
-    "false": (
-        "The segment is the episode's own content: conversation, interview, news, "
-        "or storytelling, the show's own intro and outro, or the hosts promoting "
-        "their own work, even when companies or products are discussed."
+    "not_ad": (
+        "The episode's own content: conversation, interview, news, or storytelling, "
+        "the show's own intro and outro, or the hosts promoting their own work, even "
+        "when companies or products are discussed."
     ),
 }
+AD_QUESTION = "Is `line` from `transcript` an ad under `ad_policy`?"
 
 RETRYABLE_STATUS_CODES = {408, 409, 429, 529}
 
@@ -147,45 +146,52 @@ class JevClient:
         *,
         podcast_title: str | None,
         podcast_description: str | None,
+        known_ad_confidences: dict[int, float] | None = None,
     ) -> AdSegmentPredictionList:
-        """Ask Jev, per segment, whether it is advertising content."""
+        """Ask Jev, per segment, whether it is advertising content.
+
+        `known_ad_confidences` maps segment indexes that already have an ad
+        identification (overlap carried from the previous chunk) to their stored
+        confidence. They stay in the state for context but aren't asked again.
+        """
+        known = known_ad_confidences or {}
         state = {
+            "ad_policy": AD_POLICY,
             "podcast": {
                 "title": podcast_title or "",
                 "description": (podcast_description or "")[:MAX_DESCRIPTION_CHARS],
             },
             "transcript": [
-                {"start_seconds": round(seg.start, 1), "text": seg.text}
-                for seg in segments
+                {"id": i, "start_seconds": round(seg.start), "text": seg.text}
+                for i, seg in enumerate(segments)
             ],
         }
 
-        predictions: list[AdSegmentPrediction] = []
-        for batch_start in range(0, len(segments), MAX_QUESTIONS_PER_REQUEST):
-            batch = segments[batch_start : batch_start + MAX_QUESTIONS_PER_REQUEST]
+        probabilities = dict(known)
+        to_ask = [i for i in range(len(segments)) if i not in known]
+        for batch_start in range(0, len(to_ask), MAX_QUESTIONS_PER_REQUEST):
+            batch = to_ask[batch_start : batch_start + MAX_QUESTIONS_PER_REQUEST]
             questions = {
-                f"seg_{batch_start + i}": {
+                f"seg_{i}": {
                     "type": "noul",
                     "instructions": {
-                        "segment": {
-                            "start_seconds": round(seg.start, 1),
-                            "text": seg.text,
-                        },
+                        "line": {"id": i, "text": segments[i].text},
                         "question": AD_QUESTION,
                     },
-                    "criteria": AD_CRITERIA,
                 }
-                for i, seg in enumerate(batch)
+                for i in batch
             }
             answers = self.system_one(state, questions)
-            for i, seg in enumerate(batch):
-                probability = float(answers[f"seg_{batch_start + i}"]["noul"])
-                if probability >= MIN_RECORDED_PROBABILITY:
-                    predictions.append(
-                        AdSegmentPrediction(
-                            segment_offset=seg.start,
-                            confidence=min(max(probability, 0.0), 1.0),
-                        )
-                    )
+            for i in batch:
+                probabilities[i] = float(answers[f"seg_{i}"]["noul"])
 
-        return AdSegmentPredictionList(ad_segments=predictions)
+        return AdSegmentPredictionList(
+            ad_segments=[
+                AdSegmentPrediction(
+                    segment_offset=segments[i].start,
+                    confidence=min(max(probability, 0.0), 1.0),
+                )
+                for i, probability in sorted(probabilities.items())
+                if probability >= MIN_RECORDED_PROBABILITY
+            ]
+        )
