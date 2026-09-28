@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from app.extensions import db
 from app.models import Feed, Post, ProcessingJob
 from app.writer.actions.cleanup import cleanup_missing_audio_paths_action
-from app.writer.actions.jobs import mark_cancelled_action
+from app.writer.actions.jobs import cancel_queued_jobs_action, mark_cancelled_action
 
 
 def _create_feed_and_post(app, *, guid="test-guid", audio_path="/tmp/nonexistent.mp3"):
@@ -118,3 +118,27 @@ class TestMarkCancelledAction:
             assert job.status == "cancelled"
             assert job.step_name == "Cancelled by user request"
             assert job.error_message == "Cancelled by user request"
+
+
+class TestCancelQueuedJobsAction:
+    def test_cancels_only_pending_jobs(self, app):
+        with app.app_context():
+            pending = [
+                ProcessingJob(post_guid=f"queued-{i}", status="pending")
+                for i in range(3)
+            ]
+            running = ProcessingJob(post_guid="running", status="running")
+            db.session.add_all([*pending, running])
+            db.session.commit()
+
+            count = cancel_queued_jobs_action({})
+            db.session.commit()
+
+            assert count == 3
+            for job in pending:
+                db.session.refresh(job)
+                assert job.status == "cancelled"
+                assert job.step_name == "Cancelled by user request"
+                assert job.completed_at is not None
+            db.session.refresh(running)
+            assert running.status == "running"

@@ -184,6 +184,26 @@ def mark_cancelled_action(params: dict[str, Any]) -> dict[str, Any]:
     return {"job_id": job.id, "status": "cancelled"}
 
 
+def cancel_queued_jobs_action(params: dict[str, Any]) -> int:
+    """Cancel every pending job in one write instead of one IPC call per job."""
+    reason = params.get("reason") or "Cancelled by user request"
+    count = (
+        ProcessingJob.query.filter(ProcessingJob.status == "pending").update(
+            {
+                ProcessingJob.status: "cancelled",
+                ProcessingJob.step_name: reason,
+                ProcessingJob.error_message: reason,
+                ProcessingJob.completed_at: datetime.now(UTC).replace(tzinfo=None),
+            },
+            synchronize_session=False,
+        )
+        or 0
+    )
+    if count > 0:
+        recalculate_run_counts(db.session)
+    return int(count)
+
+
 def reassign_pending_jobs_action(params: dict[str, Any]) -> int:
     run_id = params.get("run_id")
     if not run_id:

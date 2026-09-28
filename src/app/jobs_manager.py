@@ -437,21 +437,22 @@ class JobsManager:
     def cancel_queued_jobs(self) -> dict[str, Any]:
         """Cancel all queued (pending) jobs."""
         with _scheduler_app_context():
-            queued_jobs = (
-                ProcessingJob.query.filter(ProcessingJob.status == "pending")
-                .order_by(ProcessingJob.created_at.asc())
-                .all()
+            result = writer_client.action(
+                "cancel_queued_jobs",
+                {"reason": "Cancelled by user request"},
+                wait=True,
             )
-
-            cancelled_job_ids: list[str] = []
-            for job in queued_jobs:
-                self._status_manager.mark_cancelled(job.id, "Cancelled by user request")
-                cancelled_job_ids.append(job.id)
+            if not result or not result.success:
+                raise RuntimeError(
+                    getattr(result, "error", None) or "Failed to cancel queued jobs"
+                )
+            count = cast(int, result.data or 0)
+            _db.session.expire_all()
 
             return {
                 "status": "cancelled",
-                "cancelled_count": len(cancelled_job_ids),
-                "message": f"Cancelled {len(cancelled_job_ids)} queued jobs",
+                "cancelled_count": count,
+                "message": f"Cancelled {count} queued jobs",
             }
 
     def cleanup_stale_jobs(self, older_than: timedelta) -> int:
