@@ -173,6 +173,11 @@ class Config(BaseModel):
     number_of_episodes_to_whitelist_from_archive_of_new_feed: int = (
         DEFAULTS.APP_NUM_EPISODES_TO_WHITELIST_FROM_ARCHIVE_OF_NEW_FEED
     )
+    # Caps auto-whitelisting per feed per refresh so a feed that resets its GUIDs
+    # can't flood the processing queue. None disables the cap.
+    max_new_episodes_to_whitelist_per_refresh: int | None = (
+        DEFAULTS.APP_MAX_NEW_EPISODES_TO_WHITELIST_PER_REFRESH
+    )
     enable_public_landing_page: bool = DEFAULTS.APP_ENABLE_PUBLIC_LANDING_PAGE
     user_limit_total: int | None = DEFAULTS.APP_USER_LIMIT_TOTAL
     autoprocess_on_download: bool = DEFAULTS.APP_AUTOPROCESS_ON_DOWNLOAD

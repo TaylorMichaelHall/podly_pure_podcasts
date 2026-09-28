@@ -340,6 +340,80 @@ def test_refresh_feed_whitelists_when_member_exists(
     mock_writer_client.action.assert_called_once()
 
 
+def _five_new_posts():
+    return [
+        MockPost(
+            guid=f"reset-guid-{day}",
+            release_date=datetime.datetime(2024, 1, day, tzinfo=datetime.UTC),
+        )
+        for day in (3, 5, 1, 4, 2)
+    ]
+
+
+@mock.patch("app.feeds.writer_client")
+@mock.patch("app.feeds._should_auto_whitelist_new_posts", return_value=True)
+@mock.patch("app.feeds.make_post")
+@mock.patch("app.feeds.fetch_feed")
+def test_refresh_feed_caps_new_whitelisted_posts_per_refresh(
+    mock_fetch_feed,
+    mock_make_post,
+    _mock_should_auto_whitelist,
+    mock_writer_client,
+    mock_feed,
+    mock_feed_data,
+    mock_db_session,
+    monkeypatch,
+):
+    posts = _five_new_posts()
+    mock_feed_data.entries = [
+        mock.MagicMock(id=post.guid, title=post.title) for post in posts
+    ]
+    mock_fetch_feed.return_value = mock_feed_data
+    mock_make_post.side_effect = posts
+    monkeypatch.setattr(
+        "app.feeds.config",
+        SimpleNamespace(max_new_episodes_to_whitelist_per_refresh=2),
+    )
+
+    refresh_feed(mock_feed)
+
+    new_posts = mock_writer_client.action.call_args[0][1]["new_posts"]
+    assert len(new_posts) == 5
+    whitelisted = {p["guid"] for p in new_posts if p["whitelisted"]}
+    assert whitelisted == {"reset-guid-5", "reset-guid-4"}
+
+
+@mock.patch("app.feeds.writer_client")
+@mock.patch("app.feeds._should_auto_whitelist_new_posts", return_value=True)
+@mock.patch("app.feeds.make_post")
+@mock.patch("app.feeds.fetch_feed")
+def test_refresh_feed_does_not_cap_when_limit_unset(
+    mock_fetch_feed,
+    mock_make_post,
+    _mock_should_auto_whitelist,
+    mock_writer_client,
+    mock_feed,
+    mock_feed_data,
+    mock_db_session,
+    monkeypatch,
+):
+    posts = _five_new_posts()
+    mock_feed_data.entries = [
+        mock.MagicMock(id=post.guid, title=post.title) for post in posts
+    ]
+    mock_fetch_feed.return_value = mock_feed_data
+    mock_make_post.side_effect = posts
+    monkeypatch.setattr(
+        "app.feeds.config",
+        SimpleNamespace(max_new_episodes_to_whitelist_per_refresh=None),
+    )
+
+    refresh_feed(mock_feed)
+
+    new_posts = mock_writer_client.action.call_args[0][1]["new_posts"]
+    assert all(p["whitelisted"] for p in new_posts)
+
+
 @mock.patch("app.feeds.writer_client")
 @mock.patch("app.feeds._should_auto_whitelist_new_posts")
 @mock.patch("app.feeds.make_post")

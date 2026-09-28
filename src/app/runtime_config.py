@@ -44,6 +44,7 @@ else:
         llm_max_input_tokens_per_minute=DEFAULTS.LLM_MAX_INPUT_TOKENS_PER_MINUTE,
         automatically_whitelist_new_episodes=DEFAULTS.APP_AUTOMATICALLY_WHITELIST_NEW_EPISODES,
         number_of_episodes_to_whitelist_from_archive_of_new_feed=DEFAULTS.APP_NUM_EPISODES_TO_WHITELIST_FROM_ARCHIVE_OF_NEW_FEED,
+        max_new_episodes_to_whitelist_per_refresh=DEFAULTS.APP_MAX_NEW_EPISODES_TO_WHITELIST_PER_REFRESH,
         whisper=LocalWhisperConfig(model=DEFAULTS.WHISPER_LOCAL_MODEL),
         enable_public_landing_page=DEFAULTS.APP_ENABLE_PUBLIC_LANDING_PAGE,
         user_limit_total=DEFAULTS.APP_USER_LIMIT_TOTAL,

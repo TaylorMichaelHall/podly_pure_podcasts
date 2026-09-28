@@ -167,6 +167,7 @@ export interface AppConfigUI {
   automatically_whitelist_new_episodes: boolean;
   post_cleanup_retention_days: number | null;
   number_of_episodes_to_whitelist_from_archive_of_new_feed: number;
+  max_new_episodes_to_whitelist_per_refresh: number | null;
   enable_public_landing_page: boolean;
   user_limit_total: number | null;
   autoprocess_on_download: boolean;

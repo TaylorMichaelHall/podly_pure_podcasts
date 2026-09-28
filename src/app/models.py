@@ -543,6 +543,11 @@ class AppSettings(db.Model):  # type: ignore[name-defined, misc]
         nullable=False,
         default=DEFAULTS.APP_NUM_EPISODES_TO_WHITELIST_FROM_ARCHIVE_OF_NEW_FEED,
     )
+    max_new_episodes_to_whitelist_per_refresh = db.Column(
+        db.Integer,
+        nullable=True,
+        default=DEFAULTS.APP_MAX_NEW_EPISODES_TO_WHITELIST_PER_REFRESH,
+    )
     enable_public_landing_page = db.Column(
         db.Boolean,
         nullable=False,

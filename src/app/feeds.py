@@ -357,6 +357,34 @@ def fetch_feed(url: str) -> feedparser.FeedParserDict:
     return feed_data
 
 
+def _cap_new_post_whitelisting(feed: Feed, new_posts: list[dict[str, Any]]) -> None:
+    """Keep only the newest N auto-whitelisted posts from a single refresh.
+
+    Guards against feeds that reset their GUIDs, which would otherwise make the
+    whole back catalog look new and queue every episode for processing.
+    """
+    limit = getattr(config, "max_new_episodes_to_whitelist_per_refresh", None)
+    if not isinstance(limit, int) or limit < 0:
+        return
+
+    whitelisted = [p for p in new_posts if p["whitelisted"]]
+    if len(whitelisted) <= limit:
+        return
+
+    whitelisted.sort(key=lambda p: p["release_date"] or "", reverse=True)
+    for post_data in whitelisted[limit:]:
+        post_data["whitelisted"] = False
+
+    logger.warning(
+        "Feed %s (%s) returned %s new auto-whitelisted episodes; only whitelisting "
+        "the newest %s (max_new_episodes_to_whitelist_per_refresh)",
+        feed.id,
+        feed.title,
+        len(whitelisted),
+        limit,
+    )
+
+
 def refresh_feed(feed: Feed) -> None:
     logger.info(f"Refreshing feed with ID: {feed.id}")
     feed_data = fetch_feed(feed.rss_url)
@@ -435,6 +463,8 @@ number_of_episodes_to_whitelist_from_archive_of_new_feed setting: {entry.title}"
 
         if len(post_update) > 1:
             existing_post_updates.append(post_update)
+
+    _cap_new_post_whitelisting(feed, new_posts)
 
     if updates or new_posts or existing_post_updates:
         writer_client.action(

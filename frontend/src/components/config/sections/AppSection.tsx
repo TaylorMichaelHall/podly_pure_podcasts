@@ -68,6 +68,20 @@ export default function AppSection() {
               }
             />
           </Field>
+          <Field label="Max new episodes to auto-whitelist per feed refresh (blank = no limit)">
+            <input
+              className="input"
+              type="number"
+              min={1}
+              value={pending?.app?.max_new_episodes_to_whitelist_per_refresh ?? ''}
+              onChange={(e) =>
+                setField(
+                  ['app', 'max_new_episodes_to_whitelist_per_refresh'],
+                  e.target.value === '' ? null : Number(e.target.value)
+                )
+              }
+            />
+          </Field>
           <Field label="Cost Rate Per Hour ($)">
             <input
               className="input"
